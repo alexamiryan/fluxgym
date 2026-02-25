@@ -27,7 +27,7 @@ lpips
 pytorch_fid
 optimum-quanto
 sentencepiece
-huggingface_hub
+huggingface_hub<1.0
 peft
 gradio
 python-slugify

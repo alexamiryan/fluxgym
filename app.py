@@ -26,6 +26,14 @@ MAX_IMAGES = 150
 with open('models.yaml', 'r') as file:
     models = yaml.safe_load(file)
 
+def _resolve_unet_folder(base_model: str, model_config: dict) -> str:
+    import os
+    if base_model in ("flux-dev", "flux-schnell"):
+        return os.path.join("models", "unet")
+    repo = model_config.get("repo")
+    # If no repo defined (local-only), store under the model key
+    return os.path.join("models", "unet", repo if repo else base_model)
+
 def readme(base_model, lora_name, instance_prompt, sample_prompts):
 
     # model license
@@ -325,44 +333,72 @@ def recursive_update(d, u):
 def download(base_model):
     model = models[base_model]
     model_file = model["file"]
-    repo = model["repo"]
 
-    # download unet
-    if base_model == "flux-dev" or base_model == "flux-schnell":
-        unet_folder = "models/unet"
+    # --- UNET (base) checkpoint: PURELY LOCAL (no download) ---
+    # Use a stable folder per model key, so YAML keys map to local dirs.
+    # For legacy defaults keep original flat layout for flux-dev/schnell.
+    if base_model in ("flux-dev", "flux-schnell"):
+        unet_folder = os.path.join("models", "unet")
     else:
-        unet_folder = f"models/unet/{repo}"
-    unet_path = os.path.join(unet_folder, model_file)
-    if not os.path.exists(unet_path):
-        os.makedirs(unet_folder, exist_ok=True)
-        gr.Info(f"Downloading base model: {base_model}. Please wait. (You can check the terminal for the download progress)", duration=None)
-        print(f"download {base_model}")
-        hf_hub_download(repo_id=repo, local_dir=unet_folder, filename=model_file)
+        unet_folder = _resolve_unet_folder(base_model, models)
 
-    # download vae
-    vae_folder = "models/vae"
+    os.makedirs(unet_folder, exist_ok=True)
+    unet_path = os.path.join(unet_folder, model_file)
+
+    if not os.path.exists(unet_path):
+        msg = (
+            "Base model checkpoint not found (local-only mode):\n"
+            f"  {unet_path}\n\n"
+            "Please place your checkpoint file there (rename if needed) and retry.\n"
+            "Tip: your models.yaml 'file:' must exactly match the filename you place."
+        )
+        print(msg)
+        # Show once in UI as well
+        try:
+            gr.Info(msg, duration=None)
+        except Exception:
+            pass
+        raise FileNotFoundError(msg)
+
+    # --- VAE (download if missing) ---
+    vae_folder = os.path.join("models", "vae")
     vae_path = os.path.join(vae_folder, "ae.sft")
     if not os.path.exists(vae_path):
         os.makedirs(vae_folder, exist_ok=True)
-        gr.Info(f"Downloading vae")
-        print(f"downloading ae.sft...")
-        hf_hub_download(repo_id="cocktailpeanut/xulf-dev", local_dir=vae_folder, filename="ae.sft")
+        gr.Info("Downloading VAE (ae.sft)...", duration=None)
+        print("downloading ae.sft...")
+        hf_hub_download(
+            repo_id="cocktailpeanut/xulf-dev",
+            local_dir=vae_folder,
+            filename="ae.sft"
+        )
 
-    # download clip
-    clip_folder = "models/clip"
+    # --- CLIP/T5 encoders (download if missing) ---
+    clip_folder = os.path.join("models", "clip")
+    os.makedirs(clip_folder, exist_ok=True)
+
     clip_l_path = os.path.join(clip_folder, "clip_l.safetensors")
     if not os.path.exists(clip_l_path):
-        os.makedirs(clip_folder, exist_ok=True)
-        gr.Info(f"Downloading clip...")
-        print(f"download clip_l.safetensors")
-        hf_hub_download(repo_id="comfyanonymous/flux_text_encoders", local_dir=clip_folder, filename="clip_l.safetensors")
+        gr.Info("Downloading CLIP-L text encoder...", duration=None)
+        print("download clip_l.safetensors")
+        hf_hub_download(
+            repo_id="comfyanonymous/flux_text_encoders",
+            local_dir=clip_folder,
+            filename="clip_l.safetensors"
+        )
 
-    # download t5xxl
     t5xxl_path = os.path.join(clip_folder, "t5xxl_fp16.safetensors")
     if not os.path.exists(t5xxl_path):
-        print(f"download t5xxl_fp16.safetensors")
-        gr.Info(f"Downloading t5xxl...")
-        hf_hub_download(repo_id="comfyanonymous/flux_text_encoders", local_dir=clip_folder, filename="t5xxl_fp16.safetensors")
+        gr.Info("Downloading T5-XXL text encoder (fp16)...", duration=None)
+        print("download t5xxl_fp16.safetensors")
+        hf_hub_download(
+            repo_id="comfyanonymous/flux_text_encoders",
+            local_dir=clip_folder,
+            filename="t5xxl_fp16.safetensors"
+        )
+
+    # Return the resolved local UNET path in case callers use it
+    return unet_path
 
 
 def resolve_path(p):
@@ -405,7 +441,10 @@ def gen_sh(
 
     ############# Sample args ########################
     sample = ""
-    if len(sample_prompts) > 0 and sample_every_n_steps > 0:
+    sample_every_n_steps = 0 if sample_every_n_steps in (None, "") else int(sample_every_n_steps)
+    sample_prompts = (sample_prompts or "").strip()
+
+    if sample_prompts and sample_every_n_steps > 0:
         sample = f"""--sample_prompts={sample_prompts_path} --sample_every_n_steps="{sample_every_n_steps}" {line_break}"""
 
 
@@ -439,11 +478,10 @@ def gen_sh(
     #######################################################
     model_config = models[base_model]
     model_file = model_config["file"]
-    repo = model_config["repo"]
     if base_model == "flux-dev" or base_model == "flux-schnell":
         model_folder = "models/unet"
     else:
-        model_folder = f"models/unet/{repo}"
+        model_folder = _resolve_unet_folder(base_model, model_config)
     model_path = os.path.join(model_folder, model_file)
     pretrained_model_path = resolve_path(model_path)
 

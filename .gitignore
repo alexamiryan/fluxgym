@@ -1,0 +1,6 @@
+models/
+datasets/
+outputs
+sd-scripts/
+env/
+.claude/
